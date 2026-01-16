@@ -74,7 +74,14 @@ read_memory(memory_id="mem_0001")
 
 ## Backend
 
-- **Full mode**: Uses A-MEM with ChromaDB for vector storage
+| Feature | Full Mode | Fallback Mode |
+|---------|-----------|---------------|
+| Storage | ChromaDB | JSON file |
+| Search | Semantic vectors | Keyword matching |
+| Dependencies | chromadb, sentence-transformers | None |
+| Accuracy | High | Lower |
+
+- **Full mode**: Uses ChromaDB for vector storage with semantic search
 - **Fallback mode**: JSON file with keyword-based matching (still functional!)
 
 ## Environment Variables

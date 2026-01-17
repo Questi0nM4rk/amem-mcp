@@ -1,0 +1,23 @@
+# CodeRabbit Configuration
+# https://docs.coderabbit.ai/guides/configure-coderabbit
+
+language: en-US
+
+reviews:
+  # Submit "Request Changes" review when actionable comments exist
+  # This blocks merging until comments are resolved
+  request_changes_workflow: true
+  
+  # Review settings
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  
+  # Auto-review on PR open and push
+  auto_review:
+    enabled: true
+    drafts: false
+
+chat:
+  auto_reply: true

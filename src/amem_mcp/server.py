@@ -18,10 +18,11 @@ import json
 import logging
 import os
 import struct
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 import libsql_experimental as libsql
 from mcp.server.fastmcp import FastMCP
@@ -161,8 +162,8 @@ def _embed(text: str) -> bytes | None:
         embedding = model.encode(text, convert_to_numpy=True)
         # Pack as F32_BLOB (little-endian floats)
         return struct.pack(f"<{EMBEDDING_DIM}f", *embedding.tolist())
-    except Exception as e:
-        logger.exception(f"Embedding generation failed: {e}")
+    except Exception:
+        logger.exception("Embedding generation failed")
         return None
 
 

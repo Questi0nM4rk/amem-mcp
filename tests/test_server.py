@@ -1,7 +1,5 @@
 """Tests for amem_mcp.server module."""
 
-import pytest
-
 from amem_mcp.server import (
     _extract_keywords_basic,
     _generate_context,

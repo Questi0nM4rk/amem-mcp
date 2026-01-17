@@ -42,6 +42,18 @@ from mcp.server.fastmcp import FastMCP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _parse_json_field(metadata: dict[str, Any], field_name: str, default: Any) -> Any:
+    """Parse a JSON field from metadata, returning default on failure."""
+    value = metadata.get(field_name, default)
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return value if value else default
+
+
 # Persistent storage directory (global - shared across all projects)
 DATA_DIR = Path(os.environ.get("CODEAGENT_HOME", Path.home() / ".codeagent")) / "memory"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,6 +82,7 @@ def _get_nlp():
 
     try:
         import spacy
+
         try:
             _nlp = spacy.load("en_core_web_sm")
             logger.info("Loaded spaCy en_core_web_sm model")
@@ -77,6 +90,7 @@ def _get_nlp():
             # Model not downloaded, try to download it
             logger.info("Downloading spaCy en_core_web_sm model...")
             from spacy.cli import download
+
             download("en_core_web_sm")
             _nlp = spacy.load("en_core_web_sm")
     except ImportError:
@@ -94,16 +108,16 @@ class MemoryNote:
 
     def __init__(
         self,
-        id: str,
+        memory_id: str,
         content: str,
-        keywords: list[str] = None,
-        tags: list[str] = None,
+        keywords: list[str] | None = None,
+        tags: list[str] | None = None,
         context: str = "",
-        links: list[str] = None,
-        created_at: str = None,
-        updated_at: str = None,
+        links: list[str] | None = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
     ):
-        self.id = id
+        self.id = memory_id
         self.content = content
         self.keywords = keywords or []
         self.tags = tags or []
@@ -126,21 +140,135 @@ class PersistentMemorySystem:
 
     # Stopwords for keyword extraction
     STOPWORDS = {
-        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
-        'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
-        'into', 'through', 'during', 'before', 'after', 'above', 'below',
-        'between', 'under', 'again', 'further', 'then', 'once', 'here',
-        'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
-        'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
-        'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
-        'because', 'until', 'while', 'this', 'that', 'these', 'those', 'it',
-        'its', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves',
-        'you', 'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his',
-        'himself', 'she', 'her', 'hers', 'herself', 'they', 'them', 'their',
-        'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'also', 'use',
-        'used', 'using', 'uses', 'get', 'gets', 'got', 'make', 'makes', 'made',
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "and",
+        "but",
+        "if",
+        "or",
+        "because",
+        "until",
+        "while",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "i",
+        "me",
+        "my",
+        "myself",
+        "we",
+        "our",
+        "ours",
+        "ourselves",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
+        "he",
+        "him",
+        "his",
+        "himself",
+        "she",
+        "her",
+        "hers",
+        "herself",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "themselves",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "also",
+        "use",
+        "used",
+        "using",
+        "uses",
+        "get",
+        "gets",
+        "got",
+        "make",
+        "makes",
+        "made",
     }
 
     def __init__(
@@ -158,7 +286,9 @@ class PersistentMemorySystem:
             model_name: SentenceTransformer model for embeddings
         """
         import chromadb
-        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+        from chromadb.utils.embedding_functions import (
+            SentenceTransformerEmbeddingFunction,
+        )
 
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -188,6 +318,7 @@ class PersistentMemorySystem:
         if self._openai_key:
             try:
                 from openai import OpenAI
+
                 self._llm_client = OpenAI(api_key=self._openai_key)
                 logger.info("LLM-enhanced metadata enabled (OpenAI)")
             except ImportError:
@@ -198,10 +329,10 @@ class PersistentMemorySystem:
         # Evolution tracking
         self._evolution_counter = 0
         self._evolution_threshold = 10  # Evolve every 10 memories
-        self._last_evolution = None
+        self._last_evolution: str | None = None
 
         # Evolution system prompt (from original A-MEM paper)
-        self._evolution_prompt = '''
+        self._evolution_prompt = """
 You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
 Analyze the new memory note and its nearest neighbors to determine if relationships should evolve.
 
@@ -226,7 +357,7 @@ Return JSON:
         {{"id": "mem_id", "new_context": "updated context with new knowledge"}}
     ]
 }}
-'''
+"""
 
     def _load_counter(self) -> int:
         """Load persistent counter for memory IDs."""
@@ -276,14 +407,14 @@ Return JSON:
         seen_lemmas = set()
 
         # Extract from tokens with relevant POS
-        relevant_pos = {'NOUN', 'VERB', 'ADJ', 'PROPN'}
+        relevant_pos = {"NOUN", "VERB", "ADJ", "PROPN"}
         for token in doc:
             if (
-                token.pos_ in relevant_pos and
-                not token.is_stop and
-                not token.is_punct and
-                len(token.text) > 2 and
-                token.is_alpha
+                token.pos_ in relevant_pos
+                and not token.is_stop
+                and not token.is_punct
+                and len(token.text) > 2
+                and token.is_alpha
             ):
                 lemma = token.lemma_.lower()
                 if lemma not in seen_lemmas and lemma not in self.STOPWORDS:
@@ -291,7 +422,7 @@ Return JSON:
                     seen_lemmas.add(lemma)
 
         # Add named entities (technologies, organizations, products)
-        entity_labels = {'ORG', 'PRODUCT', 'GPE', 'WORK_OF_ART', 'LAW'}
+        entity_labels = {"ORG", "PRODUCT", "GPE", "WORK_OF_ART", "LAW"}
         for ent in doc.ents:
             if ent.label_ in entity_labels:
                 ent_text = ent.text.lower()
@@ -307,9 +438,10 @@ Return JSON:
         try:
             from nltk.tokenize import word_tokenize
             from nltk.corpus import stopwords
+
             try:
                 words = word_tokenize(text.lower())
-                all_stopwords = self.STOPWORDS | set(stopwords.words('english'))
+                all_stopwords = self.STOPWORDS | set(stopwords.words("english"))
             except LookupError:
                 words = text.lower().split()
                 all_stopwords = self.STOPWORDS
@@ -321,12 +453,12 @@ Return JSON:
         keywords = []
         seen = set()
         for word in words:
-            cleaned = word.strip('.,!?;:()[]{}"\'-')
+            cleaned = word.strip(".,!?;:()[]{}\"'-")
             if (
-                len(cleaned) > 2 and
-                cleaned not in all_stopwords and
-                cleaned.isalnum() and
-                cleaned not in seen
+                len(cleaned) > 2
+                and cleaned not in all_stopwords
+                and cleaned.isalnum()
+                and cleaned not in seen
             ):
                 keywords.append(cleaned)
                 seen.add(cleaned)
@@ -345,12 +477,12 @@ Return JSON:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Generate a one-sentence context/summary for this memory. Be concise."
+                            "content": "Generate a one-sentence context/summary for this memory. Be concise.",
                         },
                         {
                             "role": "user",
-                            "content": f"Content: {content[:500]}\nKeywords: {', '.join(keywords[:10])}"
-                        }
+                            "content": f"Content: {content[:500]}\nKeywords: {', '.join(keywords[:10])}",
+                        },
                     ],
                     max_tokens=100,
                     temperature=0.3,
@@ -360,10 +492,12 @@ Return JSON:
                 logger.debug(f"LLM context generation failed: {e}")
 
         # Fallback: simple context
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         return f"Memory added on {timestamp}. Keywords: {', '.join(keywords[:5])}"
 
-    def _find_links(self, keywords: list[str], content: str, exclude_id: str = None) -> list[str]:
+    def _find_links(
+        self, keywords: list[str], content: str, exclude_id: str | None = None
+    ) -> list[str]:
         """
         Find related memories using semantic + lemma-based matching.
         Keywords are already lemmatized if spaCy was used.
@@ -415,7 +549,9 @@ Return JSON:
             logger.error(f"Error finding links: {e}")
             return []
 
-    def _analyze_evolution(self, memory_id: str, content: str, keywords: list, context: str) -> dict:
+    def _analyze_evolution(
+        self, memory_id: str, content: str, keywords: list, context: str
+    ) -> dict:
         """
         Use LLM to analyze if memory should evolve relationships.
         Returns evolution decisions.
@@ -441,7 +577,11 @@ Return JSON:
                     continue
                 if i < len(results.get("documents", [[]])[0]):
                     doc = results["documents"][0][i]
-                    meta = results["metadatas"][0][i] if i < len(results.get("metadatas", [[]])[0]) else {}
+                    meta = (
+                        results["metadatas"][0][i]
+                        if i < len(results.get("metadatas", [[]])[0])
+                        else {}
+                    )
                     neighbors_text += f"- ID: {doc_id}\n  Content: {doc[:200]}...\n  Context: {meta.get('context', '')}\n\n"
 
             if not neighbors_text:
@@ -458,7 +598,10 @@ Return JSON:
             response = self._llm_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a memory evolution agent. Return only valid JSON."},
+                    {
+                        "role": "system",
+                        "content": "You are a memory evolution agent. Return only valid JSON.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=500,
@@ -504,14 +647,22 @@ Return JSON:
                 if to_id not in links:
                     links.append(to_id)
                     # Update in ChromaDB
-                    result = self.collection.get(ids=[from_id], include=["documents", "metadatas"])
+                    result = self.collection.get(
+                        ids=[from_id], include=["documents", "metadatas"]
+                    )
                     if result and result.get("ids"):
-                        content = result["documents"][0] if result.get("documents") else ""
-                        metadata = result["metadatas"][0] if result.get("metadatas") else {}
+                        content = (
+                            result["documents"][0] if result.get("documents") else ""
+                        )
+                        metadata = (
+                            result["metadatas"][0] if result.get("metadatas") else {}
+                        )
                         metadata["links"] = json.dumps(links[:10])  # Cap at 10 links
                         metadata["updated_at"] = datetime.now().isoformat()
                         self.collection.delete(ids=[from_id])
-                        self.collection.add(documents=[content], metadatas=[metadata], ids=[from_id])
+                        self.collection.add(
+                            documents=[content], metadatas=[metadata], ids=[from_id]
+                        )
                         logger.debug(f"Added reverse link {from_id} -> {to_id}")
         except Exception as e:
             logger.warning(f"Failed to add reverse link {from_id} -> {to_id}: {e}")
@@ -519,7 +670,9 @@ Return JSON:
     def _update_neighbor_context(self, memory_id: str, new_context: str):
         """Update a neighbor's context with new knowledge."""
         try:
-            result = self.collection.get(ids=[memory_id], include=["documents", "metadatas"])
+            result = self.collection.get(
+                ids=[memory_id], include=["documents", "metadatas"]
+            )
             if result and result.get("ids"):
                 content = result["documents"][0] if result.get("documents") else ""
                 metadata = result["metadatas"][0] if result.get("metadatas") else {}
@@ -530,7 +683,9 @@ Return JSON:
                 metadata["updated_at"] = datetime.now().isoformat()
 
                 self.collection.delete(ids=[memory_id])
-                self.collection.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+                self.collection.add(
+                    documents=[content], metadatas=[metadata], ids=[memory_id]
+                )
                 logger.debug(f"Updated neighbor context for {memory_id}")
         except Exception as e:
             logger.warning(f"Failed to update neighbor context {memory_id}: {e}")
@@ -557,8 +712,16 @@ Return JSON:
                 return {"consolidated": 0, "evolved": 0}
 
             for i, memory_id in enumerate(all_results["ids"]):
-                content = all_results["documents"][i] if i < len(all_results.get("documents", [])) else ""
-                metadata = all_results["metadatas"][i] if i < len(all_results.get("metadatas", [])) else {}
+                content = (
+                    all_results["documents"][i]
+                    if i < len(all_results.get("documents", []))
+                    else ""
+                )
+                metadata = (
+                    all_results["metadatas"][i]
+                    if i < len(all_results.get("metadatas", []))
+                    else {}
+                )
 
                 # Re-extract keywords with current spaCy
                 keywords = self._extract_keywords(content)
@@ -582,7 +745,9 @@ Return JSON:
                         old_links = []
 
                 # Check if evolution needed
-                if set(keywords) != set(old_keywords) or set(new_links) != set(old_links):
+                if set(keywords) != set(old_keywords) or set(new_links) != set(
+                    old_links
+                ):
                     # Update metadata
                     metadata["keywords"] = json.dumps(keywords)
                     metadata["links"] = json.dumps(new_links)
@@ -590,7 +755,9 @@ Return JSON:
 
                     # Update in ChromaDB
                     self.collection.delete(ids=[memory_id])
-                    self.collection.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+                    self.collection.add(
+                        documents=[content], metadatas=[metadata], ids=[memory_id]
+                    )
 
                     evolved += 1
 
@@ -605,7 +772,9 @@ Return JSON:
             logger.error(f"Consolidation failed: {e}")
             return {"consolidated": consolidated, "evolved": evolved, "error": str(e)}
 
-    def add_note(self, content: str, tags: list = None, **kwargs) -> str:
+    def add_note(
+        self, content: str, tags: list[str] | None = None, **kwargs: Any
+    ) -> str:
         """Add a new memory note with evolution."""
         self._counter += 1
         mem_id = f"mem_{self._counter:04d}"
@@ -662,23 +831,13 @@ Return JSON:
             content = result["documents"][0] if result.get("documents") else ""
             metadata = result["metadatas"][0] if result.get("metadatas") else {}
 
-            # Parse JSON fields
-            def parse_json_field(field_name, default):
-                value = metadata.get(field_name, default)
-                if isinstance(value, str):
-                    try:
-                        return json.loads(value)
-                    except (json.JSONDecodeError, TypeError):
-                        return default
-                return value if value else default
-
             return MemoryNote(
-                id=memory_id,
+                memory_id=memory_id,
                 content=content,
-                keywords=parse_json_field("keywords", []),
-                tags=parse_json_field("tags", []),
+                keywords=_parse_json_field(metadata, "keywords", []),
+                tags=_parse_json_field(metadata, "tags", []),
                 context=metadata.get("context", ""),
-                links=parse_json_field("links", []),
+                links=_parse_json_field(metadata, "links", []),
                 created_at=metadata.get("created_at", ""),
                 updated_at=metadata.get("updated_at", ""),
             )
@@ -717,16 +876,6 @@ Return JSON:
                 content = documents[i] if i < len(documents) else ""
                 metadata = metadatas[i] if i < len(metadatas) else {}
 
-                # Parse JSON fields
-                def parse_json_field(field_name, default):
-                    value = metadata.get(field_name, default)
-                    if isinstance(value, str):
-                        try:
-                            return json.loads(value)
-                        except (json.JSONDecodeError, TypeError):
-                            return default
-                    return value if value else default
-
                 # Calculate score from distance (lower distance = higher score)
                 if query.strip() and "distances" in results:
                     distances = results.get("distances", [[]])[0]
@@ -735,15 +884,17 @@ Return JSON:
                 else:
                     score = 1.0  # No query, all equally relevant
 
-                memories.append({
-                    "id": doc_id,
-                    "content": content,
-                    "keywords": parse_json_field("keywords", []),
-                    "tags": parse_json_field("tags", []),
-                    "context": metadata.get("context", ""),
-                    "links": parse_json_field("links", []),
-                    "score": round(score, 3),
-                })
+                memories.append(
+                    {
+                        "id": doc_id,
+                        "content": content,
+                        "keywords": _parse_json_field(metadata, "keywords", []),
+                        "tags": _parse_json_field(metadata, "tags", []),
+                        "context": metadata.get("context", ""),
+                        "links": _parse_json_field(metadata, "links", []),
+                        "score": round(score, 3),
+                    }
+                )
 
             return memories
 
@@ -751,7 +902,7 @@ Return JSON:
             logger.error(f"Search failed: {e}")
             return []
 
-    def update(self, memory_id: str, content: str = None, **kwargs) -> bool:
+    def update(self, memory_id: str, content: str | None = None, **kwargs: Any) -> bool:
         """Update an existing memory."""
         try:
             # Get existing memory
@@ -831,12 +982,48 @@ class _SimpleFallbackMemory:
 
     def _extract_keywords(self, text: str) -> list[str]:
         """Simple keyword extraction."""
-        stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
-                     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-                     'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-                     'and', 'but', 'or', 'not', 'this', 'that', 'it', 'its'}
+        stopwords = {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "and",
+            "but",
+            "or",
+            "not",
+            "this",
+            "that",
+            "it",
+            "its",
+        }
         words = text.lower().split()
-        keywords = [w.strip('.,!?;:') for w in words if w.strip('.,!?;:') not in stopwords and len(w) > 2]
+        keywords = [
+            w.strip(".,!?;:")
+            for w in words
+            if w.strip(".,!?;:") not in stopwords and len(w) > 2
+        ]
         return list(set(keywords))[:10]
 
     def _find_links(self, keywords: list[str]) -> list[str]:
@@ -849,7 +1036,9 @@ class _SimpleFallbackMemory:
                 links.append(mem_id)
         return links[:5]  # Max 5 links
 
-    def add_note(self, content: str, tags: list = None, **kwargs) -> str:
+    def add_note(
+        self, content: str, tags: list[str] | None = None, **kwargs: Any
+    ) -> str:
         """Add a new memory."""
         self.memories["counter"] = self.memories.get("counter", 0) + 1
         mem_id = f"mem_{self.memories['counter']:04d}"
@@ -880,7 +1069,7 @@ class _SimpleFallbackMemory:
             return None
 
         return MemoryNote(
-            id=mem["id"],
+            memory_id=mem["id"],
             content=mem["content"],
             keywords=mem["keywords"],
             tags=mem["tags"],
@@ -899,8 +1088,12 @@ class _SimpleFallbackMemory:
             mem_content = mem.get("content", "").lower()
 
             # Score by keyword overlap and content match
-            keyword_score = len(query_keywords & mem_keywords) / max(len(query_keywords), 1)
-            content_score = sum(1 for kw in query_keywords if kw in mem_content) / max(len(query_keywords), 1)
+            keyword_score = len(query_keywords & mem_keywords) / max(
+                len(query_keywords), 1
+            )
+            content_score = sum(1 for kw in query_keywords if kw in mem_content) / max(
+                len(query_keywords), 1
+            )
             score = keyword_score * 0.6 + content_score * 0.4
 
             if score > 0 or not query.strip():  # Include all if no query
@@ -910,26 +1103,30 @@ class _SimpleFallbackMemory:
 
         results = []
         for score, mem in scored[:k]:
-            results.append({
-                "id": mem["id"],
-                "content": mem["content"],
-                "keywords": mem["keywords"],
-                "tags": mem["tags"],
-                "context": mem.get("context", ""),
-                "links": mem.get("links", []),
-                "score": round(score, 3),
-            })
+            results.append(
+                {
+                    "id": mem["id"],
+                    "content": mem["content"],
+                    "keywords": mem["keywords"],
+                    "tags": mem["tags"],
+                    "context": mem.get("context", ""),
+                    "links": mem.get("links", []),
+                    "score": round(score, 3),
+                }
+            )
 
         return results
 
-    def update(self, memory_id: str, content: str = None, **kwargs) -> bool:
+    def update(self, memory_id: str, content: str | None = None, **kwargs: Any) -> bool:
         """Update a memory."""
         if memory_id not in self.memories.get("memories", {}):
             return False
 
         if content:
             self.memories["memories"][memory_id]["content"] = content
-            self.memories["memories"][memory_id]["keywords"] = self._extract_keywords(content)
+            self.memories["memories"][memory_id]["keywords"] = self._extract_keywords(
+                content
+            )
             self.memories["memories"][memory_id]["links"] = self._find_links(
                 self.memories["memories"][memory_id]["keywords"]
             )
@@ -1042,7 +1239,9 @@ def store_memory(
             return {
                 "stored": True,
                 "memory_id": memory_id,
-                "content_preview": content[:100] + "..." if len(content) > 100 else content,
+                "content_preview": content[:100] + "..."
+                if len(content) > 100
+                else content,
                 "keywords": formatted.get("keywords", []),
                 "context": formatted.get("context", ""),
                 "linked_to": len(formatted.get("links", [])),
@@ -1098,15 +1297,17 @@ def search_memory(
 
         formatted = []
         for result in results:
-            formatted.append({
-                "id": result.get("id", ""),
-                "content": result.get("content", ""),
-                "keywords": result.get("keywords", []),
-                "tags": result.get("tags", []),
-                "context": result.get("context", ""),
-                "links": result.get("links", []),
-                "relevance": result.get("score", 0),
-            })
+            formatted.append(
+                {
+                    "id": result.get("id", ""),
+                    "content": result.get("content", ""),
+                    "keywords": result.get("keywords", []),
+                    "tags": result.get("tags", []),
+                    "context": result.get("context", ""),
+                    "links": result.get("links", []),
+                    "relevance": result.get("score", 0),
+                }
+            )
 
         return {
             "query": query,
@@ -1180,7 +1381,9 @@ def list_memories(
 
     try:
         # Use search with empty query to get all, then filter
-        results = memory.search_agentic("", k=limit * 2)  # Get more to account for filtering
+        results = memory.search_agentic(
+            "", k=limit * 2
+        )  # Get more to account for filtering
 
         # Filter
         if project:
@@ -1193,12 +1396,15 @@ def list_memories(
         results = results[:limit]
 
         return {
-            "memories": [{
-                "id": r.get("id", ""),
-                "content_preview": r.get("content", "")[:100],
-                "keywords": r.get("keywords", [])[:5],
-                "tags": r.get("tags", []),
-            } for r in results],
+            "memories": [
+                {
+                    "id": r.get("id", ""),
+                    "content_preview": r.get("content", "")[:100],
+                    "keywords": r.get("keywords", [])[:5],
+                    "tags": r.get("tags", []),
+                }
+                for r in results
+            ],
             "count": len(results),
             "filters": {
                 "project": project,
@@ -1299,8 +1505,8 @@ def get_memory_stats() -> dict[str, Any]:
         total = len(all_results)
 
         # Count by project
-        projects = {}
-        tags_count = {}
+        projects: dict[str, int] = {}
+        tags_count: dict[str, int] = {}
         for r in all_results:
             for tag in r.get("tags", []):
                 if tag.startswith("project:"):
@@ -1315,13 +1521,15 @@ def get_memory_stats() -> dict[str, Any]:
         else:
             backend = "ChromaDB (persistent)"
             # Check if LLM enhanced
-            if hasattr(memory, '_llm_client') and memory._llm_client:
+            if hasattr(memory, "_llm_client") and memory._llm_client:
                 backend += " + LLM metadata"
 
         return {
             "total_memories": total,
             "memories_by_project": projects,
-            "top_tags": dict(sorted(tags_count.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "top_tags": dict(
+                sorted(tags_count.items(), key=lambda x: x[1], reverse=True)[:10]
+            ),
             "storage_path": str(DATA_DIR),
             "using_fallback": _use_fallback,
             "backend": backend,
@@ -1350,7 +1558,7 @@ def evolve_now() -> dict[str, Any]:
     """
     memory = _get_memory_system()
 
-    if hasattr(memory, 'consolidate_memories'):
+    if hasattr(memory, "consolidate_memories"):
         result = memory.consolidate_memories()
         return {
             "status": "completed",

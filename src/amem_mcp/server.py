@@ -162,7 +162,7 @@ def _embed(text: str) -> bytes | None:
         # Pack as F32_BLOB (little-endian floats)
         return struct.pack(f"<{EMBEDDING_DIM}f", *embedding.tolist())
     except Exception as e:
-        logger.error(f"Embedding generation failed: {e}")
+        logger.exception(f"Embedding generation failed: {e}")
         return None
 
 
@@ -378,7 +378,7 @@ def _extract_keywords_basic(text: str) -> list[str]:
     return keywords[:15]
 
 
-def _generate_context(content: str, keywords: list[str]) -> str:
+def _generate_context(keywords: list[str]) -> str:
     """Generate context for a memory."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"Memory added on {timestamp}. Keywords: {', '.join(keywords[:5])}"
@@ -433,7 +433,9 @@ def _find_links(
     # Fallback: keyword-only search
     if not links:
         try:
-            cursor = conn.execute("SELECT memory_id, keywords FROM memories LIMIT 50")
+            cursor = conn.execute(
+                "SELECT memory_id, keywords FROM memories ORDER BY created_at DESC LIMIT 50"
+            )
             keyword_set = set(kw.lower() for kw in keywords)
 
             for row in cursor.fetchall():
@@ -495,7 +497,7 @@ def store_memory(
 
             # Extract metadata
             keywords = _extract_keywords(content)
-            context = _generate_context(content, keywords)
+            context = _generate_context(keywords)
 
             # Find related memories for linking
             links = _find_links(conn, keywords, content, exclude_id=memory_id)
@@ -684,10 +686,7 @@ def search_memory(
                     {**mem, "relevance": round(score, 3)} for score, mem in scored[:k]
                 ]
 
-            # Filter by project if specified and not already filtered
-            if project and not embedding:
-                project_tag = f"project:{project}"
-                results = [r for r in results if project_tag in r.get("tags", [])]
+            # Note: project filtering is already done in SQL for both vector and keyword paths
 
             return {
                 "query": query,
@@ -840,7 +839,7 @@ def update_memory(
 
             # Re-extract metadata
             keywords = _extract_keywords(content)
-            context = _generate_context(content, keywords)
+            context = _generate_context(keywords)
             new_links = _find_links(conn, keywords, content, exclude_id=memory_id)
             new_links_set = set(new_links)
             embedding = _embed(content)
@@ -927,13 +926,14 @@ def delete_memory(memory_id: str) -> dict[str, Any]:
             now = datetime.now().isoformat()
 
             # Remove backlinks from other memories that link to this one
+            # LIKE is a pre-filter; exact match is verified in Python after JSON parse
             cursor = conn.execute(
                 "SELECT memory_id, links FROM memories WHERE links LIKE ?",
                 (f'%"{memory_id}"%',),
             )
             for mem_id, links_json in cursor.fetchall():
                 links = _json_loads(links_json)
-                if memory_id in links:
+                if memory_id in links:  # Exact match after parsing
                     links.remove(memory_id)
                     conn.execute(
                         "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
@@ -1034,10 +1034,15 @@ def evolve_now() -> dict[str, Any]:
 
             consolidated = 0
             evolved = 0
+            total = len(rows)
             now = datetime.now().isoformat()
 
             for row in rows:
                 mem_id, content, old_kw_json, old_links_json = row
+
+                # Progress logging for large datasets
+                if consolidated > 0 and consolidated % 100 == 0:
+                    logger.info(f"Evolving memories: {consolidated}/{total} processed")
 
                 # Re-extract keywords
                 keywords = _extract_keywords(content)

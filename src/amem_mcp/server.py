@@ -457,15 +457,6 @@ def _find_links(
     return links
 
 
-def _get_next_memory_id(conn: libsql.Connection) -> str:
-    """Get the next memory ID."""
-    cursor = conn.execute("SELECT counter FROM memory_counter WHERE id = 1")
-    row = cursor.fetchone()
-    counter = (row[0] if row else 0) + 1
-    conn.execute("UPDATE memory_counter SET counter = ? WHERE id = 1", (counter,))
-    return f"mem_{counter:04d}"
-
-
 # ============================================
 # MCP Tools
 # ============================================
@@ -495,8 +486,12 @@ def store_memory(
     """
     try:
         with _get_db() as conn:
-            # Generate memory ID
-            memory_id = _get_next_memory_id(conn)
+            # Generate memory ID atomically
+            cursor = conn.execute(
+                "UPDATE memory_counter SET counter = counter + 1 WHERE id = 1 RETURNING counter"
+            )
+            row = cursor.fetchone()
+            memory_id = f"mem_{row[0]:04d}"
 
             # Extract metadata
             keywords = _extract_keywords(content)
@@ -557,7 +552,9 @@ def store_memory(
             return {
                 "stored": True,
                 "memory_id": memory_id,
-                "content_preview": content[:100] + "..." if len(content) > 100 else content,
+                "content_preview": content[:100] + "..."
+                if len(content) > 100
+                else content,
                 "keywords": keywords,
                 "context": context,
                 "linked_to": len(links),
@@ -617,7 +614,15 @@ def search_memory(
                     cursor = conn.execute(sql, params)
 
                     for row in cursor.fetchall():
-                        mem_id, content, kw_json, ctx, tags_json, links_json, distance = row
+                        (
+                            mem_id,
+                            content,
+                            kw_json,
+                            ctx,
+                            tags_json,
+                            links_json,
+                            distance,
+                        ) = row
                         score = 1.0 / (1.0 + distance) if distance else 1.0
                         results.append(
                             {
@@ -654,7 +659,9 @@ def search_memory(
                     mem_id, content, kw_json, ctx, tags_json, links_json = row
                     mem_keywords = set(_json_loads(kw_json))
                     overlap = len(query_keywords & mem_keywords)
-                    content_score = sum(1 for kw in query_keywords if kw in content.lower())
+                    content_score = sum(
+                        1 for kw in query_keywords if kw in content.lower()
+                    )
                     score = overlap * 0.6 + content_score * 0.4
 
                     if score > 0 or not query.strip():
@@ -820,18 +827,22 @@ def update_memory(
     """
     try:
         with _get_db() as conn:
-            # Check if memory exists
+            # Get existing links for bidirectional consistency
             cursor = conn.execute(
-                "SELECT id FROM memories WHERE memory_id = ?",
+                "SELECT links FROM memories WHERE memory_id = ?",
                 (memory_id,),
             )
-            if not cursor.fetchone():
+            row = cursor.fetchone()
+            if not row:
                 return {"updated": False, "error": f"Memory not found: {memory_id}"}
+
+            old_links = set(_json_loads(row[0]))
 
             # Re-extract metadata
             keywords = _extract_keywords(content)
             context = _generate_context(content, keywords)
-            links = _find_links(conn, keywords, content, exclude_id=memory_id)
+            new_links = _find_links(conn, keywords, content, exclude_id=memory_id)
+            new_links_set = set(new_links)
             embedding = _embed(content)
             now = datetime.now().isoformat()
 
@@ -846,19 +857,54 @@ def update_memory(
                     content,
                     _json_dumps(keywords),
                     context,
-                    _json_dumps(links),
+                    _json_dumps(new_links),
                     embedding,
                     now,
                     memory_id,
                 ),
             )
+
+            # Update bidirectional links: add reverse links to new targets
+            added = new_links_set - old_links
+            for linked_id in added:
+                cursor = conn.execute(
+                    "SELECT links FROM memories WHERE memory_id = ?",
+                    (linked_id,),
+                )
+                link_row = cursor.fetchone()
+                if link_row:
+                    existing = _json_loads(link_row[0])
+                    if memory_id not in existing:
+                        existing.append(memory_id)
+                        conn.execute(
+                            "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
+                            (_json_dumps(existing[:10]), now, linked_id),
+                        )
+
+            # Remove reverse links from removed targets
+            removed = old_links - new_links_set
+            for linked_id in removed:
+                cursor = conn.execute(
+                    "SELECT links FROM memories WHERE memory_id = ?",
+                    (linked_id,),
+                )
+                link_row = cursor.fetchone()
+                if link_row:
+                    existing = _json_loads(link_row[0])
+                    if memory_id in existing:
+                        existing.remove(memory_id)
+                        conn.execute(
+                            "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
+                            (_json_dumps(existing), now, linked_id),
+                        )
+
             conn.commit()
 
             return {
                 "updated": True,
                 "memory_id": memory_id,
                 "new_keywords": keywords,
-                "new_links": len(links),
+                "new_links": len(new_links),
             }
 
     except Exception as e:
@@ -878,6 +924,23 @@ def delete_memory(memory_id: str) -> dict[str, Any]:
     """
     try:
         with _get_db() as conn:
+            now = datetime.now().isoformat()
+
+            # Remove backlinks from other memories that link to this one
+            cursor = conn.execute(
+                "SELECT memory_id, links FROM memories WHERE links LIKE ?",
+                (f'%"{memory_id}"%',),
+            )
+            for mem_id, links_json in cursor.fetchall():
+                links = _json_loads(links_json)
+                if memory_id in links:
+                    links.remove(memory_id)
+                    conn.execute(
+                        "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
+                        (_json_dumps(links), now, mem_id),
+                    )
+
+            # Delete the memory
             cursor = conn.execute(
                 "DELETE FROM memories WHERE memory_id = ?",
                 (memory_id,),
@@ -982,10 +1045,11 @@ def evolve_now() -> dict[str, Any]:
 
                 # Re-find links
                 new_links = _find_links(conn, keywords, content, exclude_id=mem_id)
-                old_links = _json_loads(old_links_json)
+                old_links_set = set(_json_loads(old_links_json))
+                new_links_set = set(new_links)
 
                 # Check if evolution needed
-                if set(keywords) != set(old_keywords) or set(new_links) != set(old_links):
+                if set(keywords) != set(old_keywords) or new_links_set != old_links_set:
                     # Re-generate embedding
                     embedding = _embed(content)
 
@@ -1003,6 +1067,40 @@ def evolve_now() -> dict[str, Any]:
                             mem_id,
                         ),
                     )
+
+                    # Update bidirectional links
+                    added = new_links_set - old_links_set
+                    for linked_id in added:
+                        link_cursor = conn.execute(
+                            "SELECT links FROM memories WHERE memory_id = ?",
+                            (linked_id,),
+                        )
+                        link_row = link_cursor.fetchone()
+                        if link_row:
+                            existing = _json_loads(link_row[0])
+                            if mem_id not in existing:
+                                existing.append(mem_id)
+                                conn.execute(
+                                    "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
+                                    (_json_dumps(existing[:10]), now, linked_id),
+                                )
+
+                    removed = old_links_set - new_links_set
+                    for linked_id in removed:
+                        link_cursor = conn.execute(
+                            "SELECT links FROM memories WHERE memory_id = ?",
+                            (linked_id,),
+                        )
+                        link_row = link_cursor.fetchone()
+                        if link_row:
+                            existing = _json_loads(link_row[0])
+                            if mem_id in existing:
+                                existing.remove(mem_id)
+                                conn.execute(
+                                    "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
+                                    (_json_dumps(existing), now, linked_id),
+                                )
+
                     evolved += 1
 
                 consolidated += 1

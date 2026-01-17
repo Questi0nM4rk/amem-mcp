@@ -114,7 +114,10 @@ def _get_db() -> Generator[libsql.Connection, None, None]:
 
 
 def _init_schema(conn: libsql.Connection) -> None:
-    """Initialize database schema."""
+    """Initialize database schema.
+
+    Uses f-string for EMBEDDING_DIM which is a module constant (384), not user input.
+    """
     conn.executescript(f"""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

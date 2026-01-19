@@ -6,9 +6,9 @@ Brain-like memory for Claude Code based on the NeurIPS 2025 paper "A-MEM: Agenti
 
 - **Automatic memory linking**: New memories automatically connect to related existing ones
 - **Memory evolution**: New information updates the context of existing memories
-- **Rich metadata**: Auto-generated keywords, context, and tags
-- **Global storage**: Shared across all projects at `~/.codeagent/memory/`
-- **Fallback mode**: Works without A-MEM library using simple keyword matching
+- **Rich metadata**: Auto-generated keywords, context, and tags using spaCy NLP
+- **Vector search**: 384-dimension sentence-transformer embeddings for semantic similarity
+- **Global storage**: Shared libSQL database at `~/.codeagent/codeagent.db`
 
 ## Tools
 
@@ -21,6 +21,7 @@ Brain-like memory for Claude Code based on the NeurIPS 2025 paper "A-MEM: Agenti
 | `update_memory` | Update existing memory (triggers re-evolution) |
 | `delete_memory` | Remove a memory |
 | `get_memory_stats` | Statistics about the memory system |
+| `evolve_now` | Manually trigger memory evolution/consolidation |
 
 ## Philosophy
 
@@ -30,21 +31,20 @@ Based on [A-MEM](https://arxiv.org/abs/2409.07536) (2024) - "Agentic Memory for 
 
 ## Installation
 
-### Basic (fallback mode - JSON storage)
+### Basic (keyword matching only)
 
 ```bash
 pip install git+https://github.com/Questi0nM4rk/amem-mcp.git
 ```
 
-### Full (ChromaDB + semantic search)
+### Full (vector search + NLP keywords)
 
 ```bash
 pip install "git+https://github.com/Questi0nM4rk/amem-mcp.git[full]"
-```
 
-Note: Full installation requires:
-- `OPENAI_API_KEY` environment variable for metadata generation
-- OR Ollama running locally
+# Download spaCy model
+python -m spacy download en_core_web_sm
+```
 
 ## Usage with Claude Code
 
@@ -63,36 +63,55 @@ search_memory(query="data access patterns")
 
 # Read specific memory
 read_memory(memory_id="mem_0001")
+
+# Filter by project
+search_memory(query="architecture", project="JaCore")
 ```
 
 ## How It Works
 
-1. **Store**: Content is analyzed, keywords extracted, and similar memories found
+1. **Store**: Content is analyzed, keywords extracted (spaCy NLP), and similar memories found
 2. **Link**: Bidirectional links created between related memories
 3. **Evolve**: Existing memories' context updated with new information
-4. **Search**: Vector similarity + link traversal for comprehensive results
+4. **Search**: Vector similarity + keyword matching for comprehensive results
 
 ## Backend
 
-| Feature | Full Mode | Fallback Mode |
-|---------|-----------|---------------|
-| Storage | ChromaDB | JSON file |
-| Search | Semantic vectors | Keyword matching |
-| Dependencies | chromadb, sentence-transformers | None |
-| Accuracy | High | Lower |
+| Feature | Full Mode | Basic Mode |
+|---------|-----------|------------|
+| Storage | libSQL | libSQL |
+| Search | Vector similarity | Keyword matching |
+| Keywords | spaCy NLP | Basic tokenization |
+| Dependencies | sentence-transformers, spacy | None |
 
-- **Full mode**: Uses ChromaDB for vector storage with semantic search
-- **Fallback mode**: JSON file with keyword-based matching (still functional!)
+- **Full mode**: Uses sentence-transformers for vector embeddings with spaCy for NLP keyword extraction
+- **Basic mode**: Falls back to keyword-based matching (still functional!)
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | For full mode | LLM for metadata generation |
 | `CODEAGENT_HOME` | Optional | Override default `~/.codeagent` |
 
 ## Storage
 
-Memories stored at: `~/.codeagent/memory/`
-- ChromaDB (full mode): `~/.codeagent/memory/chromadb/`
-- JSON (fallback): `~/.codeagent/memory/memories.json`
+Database: `~/.codeagent/codeagent.db` (libSQL with vector search)
+
+Schema:
+- `memories` table with 384-dimension F32_BLOB embeddings
+- Automatic vector index for similarity search
+- JSON fields for keywords, tags, and links
+
+## Development
+
+```bash
+# Install with dev dependencies
+uv pip install -e ".[full]" --group dev
+
+# Run tests
+uv run pytest tests/ -v
+
+# Format and lint
+uv run ruff format .
+uv run ruff check .
+```

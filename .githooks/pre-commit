@@ -1,0 +1,31 @@
+#!/bin/bash
+# Pre-commit hook for amem-mcp
+# Runs linting, formatting, type checking, and tests before allowing commits
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check if we're in a virtual environment or use uv
+if command -v uv &> /dev/null; then
+    RUN="uv run"
+elif [ -n "$VIRTUAL_ENV" ]; then
+    RUN=""
+else
+    echo "Warning: No virtual environment detected. Using system Python."
+    RUN=""
+fi
+
+echo "==> Checking code style with ruff..."
+$RUN ruff check src/ tests/
+
+echo "==> Checking formatting with ruff..."
+$RUN ruff format --check src/ tests/
+
+echo "==> Type checking with pyright..."
+$RUN pyright src/ tests/
+
+echo "==> Running tests..."
+$RUN pytest tests/ -v --tb=short
+
+echo "All pre-commit checks passed!"

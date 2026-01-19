@@ -1,10 +1,13 @@
 #!/bin/bash
 # Pre-commit hook for amem-mcp
-# Runs linting, formatting, type checking, and tests before allowing commits
+# Strict validation - all checks must pass before commit is allowed
+# This is enforced because AI agents handle most development
 
 set -e
 
-echo "Running pre-commit checks..."
+echo "========================================"
+echo "Running pre-commit checks (strict mode)"
+echo "========================================"
 
 # Check if we're in a virtual environment or use uv
 if command -v uv &> /dev/null; then
@@ -16,16 +19,36 @@ else
     RUN=""
 fi
 
-echo "==> Checking code style with ruff..."
+# Python checks
+echo ""
+echo "==> [1/5] Linting Python with ruff..."
 $RUN ruff check src/ tests/
 
-echo "==> Checking formatting with ruff..."
+echo ""
+echo "==> [2/5] Checking Python formatting with ruff..."
 $RUN ruff format --check src/ tests/
 
-echo "==> Type checking with pyright..."
+echo ""
+echo "==> [3/5] Type checking with pyright..."
 $RUN pyright src/ tests/
 
-echo "==> Running tests..."
+echo ""
+echo "==> [4/5] Running tests with pytest..."
 $RUN pytest tests/ -v --tb=short
 
+# Markdown checks
+echo ""
+echo "==> [5/5] Linting Markdown files..."
+if command -v markdownlint-cli2 &> /dev/null; then
+    markdownlint-cli2 "**/*.md" --config .markdownlint.json
+elif command -v npx &> /dev/null; then
+    npx markdownlint-cli2 "**/*.md" --config .markdownlint.json
+else
+    echo "Warning: markdownlint-cli2 not found, skipping markdown lint"
+    echo "Install with: npm install -g markdownlint-cli2"
+fi
+
+echo ""
+echo "========================================"
 echo "All pre-commit checks passed!"
+echo "========================================"

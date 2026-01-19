@@ -14,12 +14,15 @@ git config core.hooksPath .githooks
 ```
 
 The hook runs:
-1. `ruff check src/ tests/` - Linting
-2. `ruff format --check src/ tests/` - Format verification
+1. `ruff check src/ tests/` - Python linting
+2. `ruff format --check src/ tests/` - Python format verification
 3. `pyright src/ tests/` - Type checking
 4. `pytest tests/ -v` - Unit tests
+5. `markdownlint-cli2 "**/*.md"` - Markdown linting
 
 All checks must pass before a commit is accepted.
+
+**Why strict?** These MCPs are primarily developed by AI agents. Strict guardrails catch issues locally before they waste PR review cycles.
 
 ## Pull Request Process
 
@@ -78,9 +81,10 @@ GitHub Actions runs on every push and PR:
 
 | Command | Purpose |
 |---------|---------|
-| `uv run ruff check .` | Run linter |
-| `uv run ruff format .` | Auto-format code |
+| `uv run ruff check .` | Run Python linter |
+| `uv run ruff format .` | Auto-format Python code |
 | `uv run pyright src/ tests/` | Type check |
 | `uv run pytest tests/ -v` | Run tests |
+| `npx markdownlint-cli2 "**/*.md"` | Lint markdown files |
 | `@coderabbitai review` | Request fresh review |
 | `@coderabbitai resolve` | Bulk resolve (use carefully) |

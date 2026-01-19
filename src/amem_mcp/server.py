@@ -128,6 +128,8 @@ def _init_schema(conn: libsql.Connection) -> None:
             tags TEXT,
             links TEXT,
             project TEXT,
+            confidence REAL DEFAULT 0.5,
+            source_task_id TEXT,
             embedding F32_BLOB({EMBEDDING_DIM}),
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
@@ -473,6 +475,8 @@ def store_memory(
     content: str,
     tags: list[str] | None = None,
     project: str | None = None,
+    confidence: float = 0.5,
+    source_task_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Store knowledge with automatic linking and memory evolution.
@@ -486,6 +490,8 @@ def store_memory(
         content: The knowledge to store (patterns, decisions, insights)
         tags: Optional tags for categorization (e.g., ["architecture", "pattern"])
         project: Optional project name for filtering later
+        confidence: Initial confidence score (0.0-1.0, default 0.5)
+        source_task_id: Link to backlog task that generated this memory
 
     Returns:
         Stored memory ID with generated metadata and links
@@ -516,12 +522,16 @@ def store_memory(
 
             now = datetime.now().isoformat()
 
+            # Clamp confidence to valid range
+            clamped_confidence = max(0.0, min(1.0, confidence))
+
             conn.execute(
                 """
                 INSERT INTO memories (
                     memory_id, content, keywords, context, tags, links,
-                    project, embedding, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    project, confidence, source_task_id, embedding,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -531,6 +541,8 @@ def store_memory(
                     _json_dumps(all_tags),
                     _json_dumps(links),
                     project,
+                    clamped_confidence,
+                    source_task_id,
                     embedding,
                     now,
                     now,
@@ -563,6 +575,8 @@ def store_memory(
                 else content,
                 "keywords": keywords,
                 "context": context,
+                "confidence": clamped_confidence,
+                "source_task_id": source_task_id,
                 "linked_to": len(links),
                 "storage_path": str(DB_PATH),
             }
@@ -604,6 +618,7 @@ def search_memory(
                 try:
                     sql = """
                         SELECT memory_id, content, keywords, context, tags, links,
+                               confidence, source_task_id,
                                vector_distance_cos(embedding, ?) as distance
                         FROM memories
                         WHERE embedding IS NOT NULL
@@ -627,6 +642,8 @@ def search_memory(
                             ctx,
                             tags_json,
                             links_json,
+                            conf,
+                            src_task,
                             distance,
                         ) = row
                         score = 1.0 / (1.0 + distance) if distance else 1.0
@@ -638,6 +655,8 @@ def search_memory(
                                 "context": ctx,
                                 "tags": _json_loads(tags_json),
                                 "links": _json_loads(links_json),
+                                "confidence": conf,
+                                "source_task_id": src_task,
                                 "relevance": round(score, 3),
                             }
                         )
@@ -649,7 +668,7 @@ def search_memory(
             if not results:
                 query_keywords = set(_extract_keywords(query))
 
-                sql = "SELECT memory_id, content, keywords, context, tags, links FROM memories"
+                sql = "SELECT memory_id, content, keywords, context, tags, links, confidence, source_task_id FROM memories"
                 params = []
 
                 if project:
@@ -662,7 +681,7 @@ def search_memory(
 
                 scored = []
                 for row in cursor.fetchall():
-                    mem_id, content, kw_json, ctx, tags_json, links_json = row
+                    mem_id, content, kw_json, ctx, tags_json, links_json, conf, src_task = row
                     mem_keywords = set(_json_loads(kw_json))
                     overlap = len(query_keywords & mem_keywords)
                     content_score = sum(
@@ -681,6 +700,8 @@ def search_memory(
                                     "context": ctx,
                                     "tags": _json_loads(tags_json),
                                     "links": _json_loads(links_json),
+                                    "confidence": conf,
+                                    "source_task_id": src_task,
                                 },
                             )
                         )
@@ -718,7 +739,8 @@ def read_memory(memory_id: str) -> dict[str, Any]:
         with _get_db() as conn:
             cursor = conn.execute(
                 """
-                SELECT memory_id, content, keywords, context, tags, links, created_at, updated_at
+                SELECT memory_id, content, keywords, context, tags, links,
+                       confidence, source_task_id, created_at, updated_at
                 FROM memories WHERE memory_id = ?
                 """,
                 (memory_id,),
@@ -736,8 +758,10 @@ def read_memory(memory_id: str) -> dict[str, Any]:
                 "context": row[3],
                 "tags": _json_loads(row[4]),
                 "links": _json_loads(row[5]),
-                "created_at": row[6],
-                "updated_at": row[7],
+                "confidence": row[6],
+                "source_task_id": row[7],
+                "created_at": row[8],
+                "updated_at": row[9],
             }
 
     except Exception as e:
@@ -1124,6 +1148,68 @@ def evolve_now() -> dict[str, Any]:
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
+
+
+@mcp.tool()
+def adjust_confidence(
+    memory_id: str,
+    delta: float,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """
+    Adjust a memory's confidence score based on implementation outcomes.
+
+    Call this after using a memory's knowledge:
+    - Increase confidence (+0.1 to +0.3) when memory led to successful implementation
+    - Decrease confidence (-0.1 to -0.3) when following the memory led to failure
+
+    Args:
+        memory_id: The memory to adjust
+        delta: Amount to change confidence (-1.0 to +1.0)
+        reason: Optional reason for the adjustment
+
+    Returns:
+        Updated confidence score
+    """
+    try:
+        with _get_db() as conn:
+            # Get current confidence
+            cursor = conn.execute(
+                "SELECT confidence FROM memories WHERE memory_id = ?",
+                (memory_id,),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return {"adjusted": False, "error": f"Memory not found: {memory_id}"}
+
+            old_confidence = row[0] or 0.5
+
+            # Clamp delta to valid range
+            clamped_delta = max(-1.0, min(1.0, delta))
+
+            # Calculate new confidence (clamped to 0.0-1.0)
+            new_confidence = max(0.0, min(1.0, old_confidence + clamped_delta))
+
+            now = datetime.now().isoformat()
+
+            conn.execute(
+                "UPDATE memories SET confidence = ?, updated_at = ? WHERE memory_id = ?",
+                (new_confidence, now, memory_id),
+            )
+            conn.commit()
+
+            return {
+                "adjusted": True,
+                "memory_id": memory_id,
+                "old_confidence": round(old_confidence, 3),
+                "new_confidence": round(new_confidence, 3),
+                "delta": round(clamped_delta, 3),
+                "reason": reason,
+            }
+
+    except Exception as e:
+        return {"adjusted": False, "error": str(e)}
 
 
 def main():

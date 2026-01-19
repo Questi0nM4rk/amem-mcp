@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 # Database configuration
 CODEAGENT_DIR = Path(os.environ.get("CODEAGENT_HOME", Path.home() / ".codeagent"))
-CODEAGENT_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = CODEAGENT_DIR / "codeagent.db"
 
 # Embedding model configuration
@@ -105,6 +104,7 @@ def _get_nlp():
 @contextmanager
 def _get_db() -> Generator[libsql.Connection, None, None]:
     """Get database connection, creating schema if needed. Closes on exit."""
+    CODEAGENT_DIR.mkdir(parents=True, exist_ok=True)
     conn = libsql.connect(str(DB_PATH))
     _init_schema(conn)
     try:
@@ -167,8 +167,8 @@ def _embed(text: str) -> bytes | None:
         embedding = model.encode(text, convert_to_numpy=True)
         # Pack as F32_BLOB (little-endian floats)
         return struct.pack(f"<{EMBEDDING_DIM}f", *embedding.tolist())
-    except Exception:
-        logger.exception("Embedding generation failed")
+    except Exception as e:
+        logger.exception(f"Embedding generation failed: {e}")
         return None
 
 
@@ -385,7 +385,14 @@ def _extract_keywords_basic(text: str) -> list[str]:
 
 
 def _generate_context(keywords: list[str]) -> str:
-    """Generate context for a memory."""
+    """Generate context for a memory.
+
+    Args:
+        keywords: List of extracted keywords to include in context.
+
+    Returns:
+        Context string with timestamp and keyword summary.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"Memory added on {timestamp}. Keywords: {', '.join(keywords[:5])}"
 
@@ -395,12 +402,25 @@ def _find_links(
     keywords: list[str],
     content: str,
     exclude_id: str | None = None,
+    embedding: bytes | None = None,
 ) -> list[str]:
-    """Find related memories using vector similarity and keyword overlap."""
+    """Find related memories using vector similarity and keyword overlap.
+
+    Args:
+        conn: Database connection.
+        keywords: Keywords to use for matching.
+        content: Content to find links for.
+        exclude_id: Optional memory ID to exclude from results.
+        embedding: Optional pre-computed embedding to reuse (saves computation).
+
+    Returns:
+        List of related memory IDs.
+    """
     links = []
 
     # Try vector search first
-    embedding = _embed(content)
+    if embedding is None:
+        embedding = _embed(content)
     if embedding is not None:
         try:
             cursor = conn.execute(
@@ -436,7 +456,7 @@ def _find_links(
         except Exception as e:
             logger.debug(f"Vector search failed, falling back to keywords: {e}")
 
-    # Fallback: keyword-only search
+    # Fallback: keyword-only search, ordered by recency for best matches
     if not links:
         try:
             cursor = conn.execute(
@@ -509,16 +529,18 @@ def store_memory(
             keywords = _extract_keywords(content)
             context = _generate_context(keywords)
 
+            # Generate embedding once and reuse for link search + storage
+            embedding = _embed(content)
+
             # Find related memories for linking
-            links = _find_links(conn, keywords, content, exclude_id=memory_id)
+            links = _find_links(
+                conn, keywords, content, exclude_id=memory_id, embedding=embedding
+            )
 
             # Add project as tag if provided
             all_tags = list(tags) if tags else []
             if project:
                 all_tags.append(f"project:{project}")
-
-            # Generate embedding
-            embedding = _embed(content)
 
             now = datetime.now().isoformat()
 
@@ -681,7 +703,16 @@ def search_memory(
 
                 scored = []
                 for row in cursor.fetchall():
-                    mem_id, content, kw_json, ctx, tags_json, links_json, conf, src_task = row
+                    (
+                        mem_id,
+                        content,
+                        kw_json,
+                        ctx,
+                        tags_json,
+                        links_json,
+                        conf,
+                        src_task,
+                    ) = row
                     mem_keywords = set(_json_loads(kw_json))
                     overlap = len(query_keywords & mem_keywords)
                     content_score = sum(
@@ -710,8 +741,6 @@ def search_memory(
                 results = [
                     {**mem, "relevance": round(score, 3)} for score, mem in scored[:k]
                 ]
-
-            # Note: project filtering is already done in SQL for both vector and keyword paths
 
             return {
                 "query": query,
@@ -954,21 +983,21 @@ def delete_memory(memory_id: str) -> dict[str, Any]:
             now = datetime.now().isoformat()
 
             # Remove backlinks from other memories that link to this one
-            # LIKE is a pre-filter; exact match is verified in Python after JSON parse
+            # Use LIKE as pre-filter for performance, then exact match in Python
             cursor = conn.execute(
                 "SELECT memory_id, links FROM memories WHERE links LIKE ?",
                 (f'%"{memory_id}"%',),
             )
             for mem_id, links_json in cursor.fetchall():
                 links = _json_loads(links_json)
-                if memory_id in links:  # Exact match after parsing
+                if memory_id in links:  # Exact match after parsing JSON
                     links.remove(memory_id)
                     conn.execute(
                         "UPDATE memories SET links = ?, updated_at = ? WHERE memory_id = ?",
                         (_json_dumps(links), now, mem_id),
                     )
 
-            # Delete the memory
+            # Delete the memory itself
             cursor = conn.execute(
                 "DELETE FROM memories WHERE memory_id = ?",
                 (memory_id,),
@@ -1076,16 +1105,19 @@ def evolve_now() -> dict[str, Any]:
                 keywords = _extract_keywords(content)
                 old_keywords = _json_loads(old_kw_json)
 
-                # Re-find links
-                new_links = _find_links(conn, keywords, content, exclude_id=mem_id)
+                # Re-generate embedding for link search and storage
+                embedding = _embed(content)
+
+                # Re-find links with pre-computed embedding
+                new_links = _find_links(
+                    conn, keywords, content, exclude_id=mem_id, embedding=embedding
+                )
                 old_links_set = set(_json_loads(old_links_json))
                 new_links_set = set(new_links)
 
                 # Check if evolution needed
                 if set(keywords) != set(old_keywords) or new_links_set != old_links_set:
-                    # Re-generate embedding
-                    embedding = _embed(content)
-
+                    # Use already computed embedding
                     conn.execute(
                         """
                         UPDATE memories SET
